@@ -1,0 +1,1 @@
+def main() -> None:    print("es-stats CLI: not implemented yet (Phase 3).")if __name__ == "__main__":    main()
