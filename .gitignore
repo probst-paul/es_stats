@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+
+# virtualenvs
+.venv/
+venv/
+env/
+ENV/
+
+# test / lint caches
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# build artifacts
+dist/
+build/
+*.egg-info/
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Spyder IDE
+.spyproject/
