@@ -1,1 +1,1 @@
-def main() -> None:    print("es-stats CLI: not implemented yet (Phase 3).")if __name__ == "__main__":    main()
+import loggingfrom es_stats.config.settings import settingsfrom es_stats.logging import configure_logginglogger = logging.getLogger(__name__)def main() -> None:    configure_logging(settings.log_level)    logger.info("es-stats CLI: not implemented yet (Phase 3).")if __name__ == "__main__":    main()
