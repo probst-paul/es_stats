@@ -25,3 +25,8 @@ build/
 
 # Spyder IDE
 .spyproject/
+
+# database / data
+data/
+*.sqlite3
+*.db
