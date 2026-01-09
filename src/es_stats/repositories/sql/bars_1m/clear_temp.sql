@@ -1,0 +1,1 @@
+DELETE FROM tmp_bars_1m;
