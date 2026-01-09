@@ -26,7 +26,10 @@ def test_import_csv_rejects_missing_file(tmp_path: Path):
 
 def test_import_csv_accepts_valid_args(tmp_path: Path):
     f = tmp_path / "bars.csv"
-    f.write_text("header1,header2\n")  # content irrelevant in Phase 3.1
+    f.write_text(
+        "datetime,open,high,low,last,volume\n"
+        "2025-01-01 08:30,100,101,99,100.5,10\n"
+    )
 
     parser = build_parser()
     args = parser.parse_args(
@@ -34,7 +37,6 @@ def test_import_csv_accepts_valid_args(tmp_path: Path):
          "America/Chicago", "--merge-policy", "skip"]
     )
 
-    # Handler should not raise
     rc = import_csv_contract_only(args, parser)
     assert rc == 0
 
