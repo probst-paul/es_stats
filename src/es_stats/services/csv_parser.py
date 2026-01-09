@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -55,7 +55,7 @@ def _parse_dt(value: str) -> datetime:
 
     # Epoch seconds (string of digits)
     if v.isdigit():
-        return datetime.fromtimestamp(int(v))
+        return datetime.fromtimestamp(int(v), tz=UTC)
 
     # Try a small set of common formats (extend as needed)
     fmts = (
