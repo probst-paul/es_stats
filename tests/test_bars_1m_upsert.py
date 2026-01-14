@@ -4,9 +4,9 @@ import sqlite3
 from pathlib import Path
 
 from es_stats.repositories.bars_1m_repo import upsert_bars_1m
+from es_stats.repositories.imports_repo import insert_import_run
 from es_stats.repositories.instruments_repo import ensure_instrument
 from es_stats.repositories.sql_loader import load_sql
-from es_stats.repositories.imports_repo import insert_import_run
 
 
 def _init_db(db_path: Path) -> sqlite3.Connection:
@@ -20,17 +20,21 @@ def test_upsert_bars_1m_skip_and_overwrite(tmp_path: Path):
     conn = _init_db(tmp_path / "t.sqlite3")
     try:
         instrument_id = ensure_instrument(conn, "ES")
-        import_id = insert_import_run(conn, {
-            "instrument_id": instrument_id,
-            "source_name": "test.csv",
-            "source_hash": None,
-            "input_timezone": "America/Chicago",
-            "bar_interval_seconds": 60,
-            "merge_policy": "skip",
-            "started_at_utc": 1700000000,
-            "status": "failed",
-            "error_summary": None,
-        })
+
+        import_id = insert_import_run(
+            conn,
+            {
+                "instrument_id": instrument_id,
+                "source_name": "test.csv",
+                "source_hash": None,
+                "input_timezone": "America/Chicago",
+                "bar_interval_seconds": 60,
+                "merge_policy": "skip",
+                "started_at_utc": 1700000000,
+                "status": "failed",
+                "error_summary": None,
+            },
+        )
 
         base = {
             "instrument_id": instrument_id,
@@ -42,6 +46,7 @@ def test_upsert_bars_1m_skip_and_overwrite(tmp_path: Path):
             "low": 0.5,
             "close": 1.5,
             "volume": 100,
+            "trades_count": 10,
             "source_import_id": import_id,
         }
 
@@ -55,14 +60,16 @@ def test_upsert_bars_1m_skip_and_overwrite(tmp_path: Path):
 
         changed = dict(base)
         changed["close"] = 9.9
+        changed["trades_count"] = 99
         c3 = upsert_bars_1m(conn, [changed], merge_policy="overwrite")
         assert c3.inserted == 0
         assert c3.updated == 1
 
-        close = conn.execute(
-            "SELECT close FROM bars_1m WHERE instrument_id = ? AND ts_start_utc = ?;",
+        row = conn.execute(
+            "SELECT close, trades_count FROM bars_1m WHERE instrument_id = ? AND ts_start_utc = ?;",
             (instrument_id, 1700000000),
-        ).fetchone()[0]
-        assert float(close) == 9.9
+        ).fetchone()
+        assert float(row[0]) == 9.9
+        assert int(row[1]) == 99
     finally:
         conn.close()

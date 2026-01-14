@@ -28,8 +28,9 @@ def test_import_csv_accepts_valid_args(tmp_path: Path, monkeypatch):
     # Create a valid CSV
     f = tmp_path / "bars.csv"
     f.write_text(
-        "datetime,open,high,low,last,volume\n"
-        "2025-01-01 08:30,100,101,99,100.5,10\n"
+        "datetime,open,high,low,last,volume,# of Trades\n"
+        "2025-01-01 08:30,100,101,99,100.5,10,5\n"
+        "2025-01-01 08:31,100.5,101.5,99.5,101.0,12,6\n"
     )
 
     # Create a temp DB and apply schema

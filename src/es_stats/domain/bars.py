@@ -17,3 +17,4 @@ class RawBar:
     low: float
     close: float
     volume: int
+    trades_count: int
