@@ -1,1 +1,301 @@
-from __future__ import annotationsimport argparseimport loggingimport sysimport timefrom pathlib import Pathfrom zoneinfo import ZoneInfofrom es_stats.config.settings import settingsfrom es_stats.db.connection import connect_default, connectionfrom es_stats.logging import configure_loggingfrom es_stats.repositories.bars_1m_repo import upsert_bars_1mfrom es_stats.repositories.bars_30m_repo import rebuild_bars_30m_rangefrom es_stats.repositories.imports_repo import finalize_import_run, insert_import_runfrom es_stats.repositories.instruments_repo import ensure_instrumentfrom es_stats.repositories.sql_loader import load_sqlfrom es_stats.services.csv_parser import CsvValidationError, read_bars_csvfrom es_stats.services.time_fields import compute_time_fieldslogger = logging.getLogger(__name__)def init_db() -> int:    sql = load_sql("schema/001_init.sql")    with connect_default() as conn:        conn.executescript(sql)    logger.info("Initialized database at %s", settings.db_path)    return 0def _validate_timezone(tz_name: str, parser: argparse.ArgumentParser) -> None:    try:        ZoneInfo(tz_name)    except Exception:        parser.error(            f"Invalid timezone: {                tz_name!r}. Must be an IANA name like 'America/Chicago'."        )def _validate_import_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:    csv_path = Path(args.file)    if not csv_path.exists() or not csv_path.is_file():        parser.error(f"CSV file not found: {str(csv_path)!r}")    if csv_path.suffix.lower() != ".csv":        parser.error(f"Expected a .csv file, got: {csv_path.name!r}")    _validate_timezone(args.timezone, parser)    # argparse choices already enforce merge_policy; this is defensive.    if args.merge_policy not in ("skip", "overwrite"):        parser.error("merge-policy must be one of: skip, overwrite")def _median_delta_seconds(ts_start_utc_values: list[int]) -> int:    """    Compute median delta (seconds) between consecutive UNIQUE timestamps.    Raises ValueError if delta cannot be computed deterministically.    """    ts_unique_sorted = sorted(set(ts_start_utc_values))    if len(ts_unique_sorted) < 2:        raise ValueError(            "Cannot validate 60s interval: fewer than 2 unique timestamps in accepted rows."        )    deltas = [        b - a        for a, b in zip(ts_unique_sorted, ts_unique_sorted[1:])        if b > a    ]    if not deltas:        raise ValueError(            "Cannot validate 60s interval: no positive timestamp deltas found.")    deltas.sort()    return deltas[len(deltas) // 2]def import_csv_contract_only(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:    """    Phase 3.6: validate args, parse/validate CSV, compute time-derived fields,    enforce canonical 60s interval, upsert into bars_1m (skip/overwrite),    rebuild bars_30m for the affected trading-date range (set-based),    and finalize the import audit row with inserted/updated/rejected counts.    Interval enforcement:      - derive ts_start_utc per accepted row      - compute deltas between consecutive UNIQUE timestamps      - median delta MUST equal 60 seconds    """    _validate_import_args(args, parser)    started_at_utc = int(time.time())    source_name = Path(args.file).name    with connection() as conn:        instrument_id = ensure_instrument(conn, args.symbol)        import_id = insert_import_run(            conn,            {                "instrument_id": instrument_id,                "source_name": source_name,                "source_hash": None,                "input_timezone": args.timezone,                "bar_interval_seconds": 60,                "merge_policy": args.merge_policy,                "started_at_utc": started_at_utc,                "status": "failed",  # pessimistic default                "error_summary": None,            },        )        try:            # Parse + row-level validation (skips invalid rows)            result = read_bars_csv(Path(args.file))            bars = result.bars            # Compute time-derived fields (per accepted bar)            derived = [compute_time_fields(b.dt, args.timezone) for b in bars]            # Enforce canonical 60s cadence            median_delta = _median_delta_seconds(                [t.ts_start_utc for t in derived])            if median_delta != 60:                raise ValueError(                    f"Detected median bar interval {                        median_delta}s; expected 60s for canonical bars_1m import."                )            # Build rows for bars_1m upsert            rows_1m: list[dict] = []            for b, t in zip(bars, derived):                rows_1m.append(                    {                        "instrument_id": instrument_id,                        "ts_start_utc": t.ts_start_utc,                        "trading_date_ct_int": t.trading_date_ct_int,                        "ct_minute_of_day": t.ct_minute_of_day,                        "open": b.open,                        "high": b.high,                        "low": b.low,                        "close": b.close,                        "volume": b.volume,                        "trades_count": b.trades_count,                        "source_import_id": import_id,                    }                )            counts_1m = upsert_bars_1m(                conn, rows_1m, merge_policy=args.merge_policy)            ts_min = min(t.ts_start_utc for t in derived)            ts_max = max(t.ts_start_utc for t in derived)            td_min = min(t.trading_date_ct_int for t in derived)            td_max = max(t.trading_date_ct_int for t in derived)            # Rebuild derived 30m for affected trading-date range            counts_30m = rebuild_bars_30m_range(                conn,                instrument_id=instrument_id,                td_min=td_min,                td_max=td_max,                derived_from_import_id=import_id,            )            finished_at_utc = int(time.time())            finalize_import_run(                conn,                {                    "import_id": import_id,                    "finished_at_utc": finished_at_utc,                    "ts_min_utc": ts_min,                    "ts_max_utc": ts_max,                    "row_count_read": result.row_count_read,                    "row_count_inserted": counts_1m.inserted,                    "row_count_updated": counts_1m.updated,                    "row_count_rejected": result.row_count_rejected,                    "status": "success",                    "error_summary": None,                },            )            logger.info(                "Import OK: import_id=%s file=%s symbol=%s merge_policy=%s "                "read=%d accepted=%d rejected=%d inserted=%d updated=%d "                "ts_min=%s ts_max=%s trading_date_ct=%s..%s median_delta_s=%s "                "rebuilt_30m(deleted=%d inserted=%d)",                import_id,                args.file,                args.symbol,                args.merge_policy,                result.row_count_read,                len(bars),                result.row_count_rejected,                counts_1m.inserted,                counts_1m.updated,                ts_min,                ts_max,                td_min,                td_max,                median_delta,                counts_30m.deleted,                counts_30m.inserted,            )            return 0        except CsvValidationError as e:            # Fatal CSV error: missing required columns, no valid rows, etc.            finalize_import_run(                conn,                {                    "import_id": import_id,                    "finished_at_utc": int(time.time()),                    "ts_min_utc": None,                    "ts_max_utc": None,                    "row_count_read": 0,                    "row_count_inserted": 0,                    "row_count_updated": 0,                    "row_count_rejected": 0,                    "status": "failed",                    "error_summary": str(e)[:500],                },            )            parser.error(str(e))            return 2  # unreachable        except Exception as e:            # Any other fatal error (interval mismatch, DB errors, etc.)            finalize_import_run(                conn,                {                    "import_id": import_id,                    "finished_at_utc": int(time.time()),                    "ts_min_utc": None,                    "ts_max_utc": None,                    "row_count_read": 0,                    "row_count_inserted": 0,                    "row_count_updated": 0,                    "row_count_rejected": 0,                    "status": "failed",                    "error_summary": str(e)[:500],                },            )            raisedef build_parser() -> argparse.ArgumentParser:    parser = argparse.ArgumentParser(prog="es-stats")    sub = parser.add_subparsers(dest="command", required=True)    p_init = sub.add_parser(        "init-db", help="Create schema in the configured SQLite database.")    p_init.set_defaults(_handler="init-db")    p_import = sub.add_parser(        "import-csv", help="Import bars from CSV into SQLite (Phase 3.x).")    p_import.add_argument("-f", "--file", required=True,                          help="Path to CSV file (server/admin input).")    p_import.add_argument("-s", "--symbol", required=True,                          help="Instrument symbol (e.g., ES, NQ).")    p_import.add_argument(        "-t",        "--timezone",        default="America/Chicago",        help="Timezone used to interpret timestamps in the CSV (default: America/Chicago).",    )    p_import.add_argument(        "-m",        "--merge-policy",        default="skip",        choices=["skip", "overwrite"],        help="On duplicate bar keys, either skip or overwrite existing records.",    )    p_import.set_defaults(_handler="import-csv")    return parserdef main(argv: list[str] | None = None) -> int:    configure_logging(settings.log_level)    parser = build_parser()    args = parser.parse_args(sys.argv[1:] if argv is None else argv)    handler = getattr(args, "_handler", None)    if handler == "init-db":        return init_db()    if handler == "import-csv":        return import_csv_contract_only(args, parser)    logger.error("No handler found for command: %s", args.command)    return 2if __name__ == "__main__":    raise SystemExit(main())
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+import time
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from es_stats.config.settings import settings
+from es_stats.db.connection import connect_default, connection
+from es_stats.logging import configure_logging
+from es_stats.repositories.bars_1m_repo import upsert_bars_1m
+from es_stats.repositories.bars_30m_repo import rebuild_bars_30m_range
+from es_stats.repositories.imports_repo import finalize_import_run, insert_import_run
+from es_stats.repositories.instruments_repo import ensure_instrument
+from es_stats.repositories.sql_loader import load_sql
+from es_stats.services.csv_parser import CsvValidationError, read_bars_csv
+from es_stats.services.time_fields import compute_time_fields
+
+logger = logging.getLogger(__name__)
+
+
+def init_db() -> int:
+    sql = load_sql("schema/001_init.sql")
+    with connect_default() as conn:
+        conn.executescript(sql)
+    logger.info("Initialized database at %s", settings.db_path)
+    return 0
+
+
+def _validate_timezone(tz_name: str, parser: argparse.ArgumentParser) -> None:
+    try:
+        ZoneInfo(tz_name)
+    except Exception:
+        parser.error(
+            f"Invalid timezone: {
+                tz_name!r}. Must be an IANA name like 'America/Chicago'."
+        )
+
+
+def _validate_import_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    csv_path = Path(args.file)
+    if not csv_path.exists() or not csv_path.is_file():
+        parser.error(f"CSV file not found: {str(csv_path)!r}")
+
+    if csv_path.suffix.lower() != ".csv":
+        parser.error(f"Expected a .csv file, got: {csv_path.name!r}")
+
+    _validate_timezone(args.timezone, parser)
+
+    # argparse choices already enforce merge_policy; this is defensive.
+    if args.merge_policy not in ("skip", "overwrite"):
+        parser.error("merge-policy must be one of: skip, overwrite")
+
+
+def _median_delta_seconds(ts_start_utc_values: list[int]) -> int:
+    """
+    Compute median delta (seconds) between consecutive UNIQUE timestamps.
+    Raises ValueError if delta cannot be computed deterministically.
+    """
+    ts_unique_sorted = sorted(set(ts_start_utc_values))
+    if len(ts_unique_sorted) < 2:
+        raise ValueError(
+            "Cannot validate 60s interval: fewer than 2 unique timestamps in accepted rows."
+        )
+
+    deltas = [
+        b - a
+        for a, b in zip(ts_unique_sorted, ts_unique_sorted[1:])
+        if b > a
+    ]
+    if not deltas:
+        raise ValueError(
+            "Cannot validate 60s interval: no positive timestamp deltas found.")
+
+    deltas.sort()
+    return deltas[len(deltas) // 2]
+
+
+def import_csv_contract_only(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    """
+    Phase 3.6: validate args, parse/validate CSV, compute time-derived fields,
+    enforce canonical 60s interval, upsert into bars_1m (skip/overwrite),
+    rebuild bars_30m for the affected trading-date range (set-based),
+    and finalize the import audit row with inserted/updated/rejected counts.
+
+    Interval enforcement:
+      - derive ts_start_utc per accepted row
+      - compute deltas between consecutive UNIQUE timestamps
+      - median delta MUST equal 60 seconds
+    """
+    _validate_import_args(args, parser)
+
+    started_at_utc = int(time.time())
+    source_name = Path(args.file).name
+
+    with connection() as conn:
+        instrument_id = ensure_instrument(conn, args.symbol)
+
+        import_id = insert_import_run(
+            conn,
+            {
+                "instrument_id": instrument_id,
+                "source_name": source_name,
+                "source_hash": None,
+                "input_timezone": args.timezone,
+                "bar_interval_seconds": 60,
+                "merge_policy": args.merge_policy,
+                "started_at_utc": started_at_utc,
+                "status": "failed",  # pessimistic default
+                "error_summary": None,
+            },
+        )
+
+        try:
+            # Parse + row-level validation (skips invalid rows)
+            result = read_bars_csv(Path(args.file))
+            bars = result.bars
+
+            # Compute time-derived fields (per accepted bar)
+            derived = [compute_time_fields(b.dt, args.timezone) for b in bars]
+
+            # Enforce canonical 60s cadence
+            median_delta = _median_delta_seconds(
+                [t.ts_start_utc for t in derived])
+            if median_delta != 60:
+                raise ValueError(
+                    f"Detected median bar interval {
+                        median_delta}s; expected 60s for canonical bars_1m import."
+                )
+
+            # Build rows for bars_1m upsert
+            rows_1m: list[dict] = []
+            for b, t in zip(bars, derived):
+                rows_1m.append(
+                    {
+                        "instrument_id": instrument_id,
+                        "ts_start_utc": t.ts_start_utc,
+                        "trading_date_ct_int": t.trading_date_ct_int,
+                        "ct_minute_of_day": t.ct_minute_of_day,
+                        "open": b.open,
+                        "high": b.high,
+                        "low": b.low,
+                        "close": b.close,
+                        "volume": b.volume,
+                        "trades_count": b.trades_count,
+                        "source_import_id": import_id,
+                    }
+                )
+
+            counts_1m = upsert_bars_1m(
+                conn, rows_1m, merge_policy=args.merge_policy)
+
+            ts_min = min(t.ts_start_utc for t in derived)
+            ts_max = max(t.ts_start_utc for t in derived)
+            td_min = min(t.trading_date_ct_int for t in derived)
+            td_max = max(t.trading_date_ct_int for t in derived)
+
+            # Rebuild derived 30m for affected trading-date range
+            counts_30m = rebuild_bars_30m_range(
+                conn,
+                instrument_id=instrument_id,
+                td_min=td_min,
+                td_max=td_max,
+                derived_from_import_id=import_id,
+            )
+
+            finished_at_utc = int(time.time())
+
+            finalize_import_run(
+                conn,
+                {
+                    "import_id": import_id,
+                    "finished_at_utc": finished_at_utc,
+                    "ts_min_utc": ts_min,
+                    "ts_max_utc": ts_max,
+                    "row_count_read": result.row_count_read,
+                    "row_count_inserted": counts_1m.inserted,
+                    "row_count_updated": counts_1m.updated,
+                    "row_count_rejected": result.row_count_rejected,
+                    "status": "success",
+                    "error_summary": None,
+                },
+            )
+
+            logger.info(
+                "Import OK: import_id=%s file=%s symbol=%s merge_policy=%s "
+                "read=%d accepted=%d rejected=%d inserted=%d updated=%d "
+                "ts_min=%s ts_max=%s trading_date_ct=%s..%s median_delta_s=%s "
+                "rebuilt_30m(deleted=%d inserted=%d)",
+                import_id,
+                args.file,
+                args.symbol,
+                args.merge_policy,
+                result.row_count_read,
+                len(bars),
+                result.row_count_rejected,
+                counts_1m.inserted,
+                counts_1m.updated,
+                ts_min,
+                ts_max,
+                td_min,
+                td_max,
+                median_delta,
+                counts_30m.deleted,
+                counts_30m.inserted,
+            )
+
+            return 0
+
+        except CsvValidationError as e:
+            # Fatal CSV error: missing required columns, no valid rows, etc.
+            finalize_import_run(
+                conn,
+                {
+                    "import_id": import_id,
+                    "finished_at_utc": int(time.time()),
+                    "ts_min_utc": None,
+                    "ts_max_utc": None,
+                    "row_count_read": 0,
+                    "row_count_inserted": 0,
+                    "row_count_updated": 0,
+                    "row_count_rejected": 0,
+                    "status": "failed",
+                    "error_summary": str(e)[:500],
+                },
+            )
+            parser.error(str(e))
+            return 2  # unreachable
+
+        except Exception as e:
+            # Any other fatal error (interval mismatch, DB errors, etc.)
+            finalize_import_run(
+                conn,
+                {
+                    "import_id": import_id,
+                    "finished_at_utc": int(time.time()),
+                    "ts_min_utc": None,
+                    "ts_max_utc": None,
+                    "row_count_read": 0,
+                    "row_count_inserted": 0,
+                    "row_count_updated": 0,
+                    "row_count_rejected": 0,
+                    "status": "failed",
+                    "error_summary": str(e)[:500],
+                },
+            )
+            raise
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="es-stats")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_init = sub.add_parser(
+        "init-db", help="Create schema in the configured SQLite database.")
+    p_init.set_defaults(_handler="init-db")
+
+    p_import = sub.add_parser(
+        "import-csv", help="Import bars from CSV into SQLite (Phase 3.x).")
+    p_import.add_argument("-f", "--file", required=True,
+                          help="Path to CSV file (server/admin input).")
+    p_import.add_argument("-s", "--symbol", required=True,
+                          help="Instrument symbol (e.g., ES, NQ).")
+    p_import.add_argument(
+        "-t",
+        "--timezone",
+        default="America/Chicago",
+        help="Timezone used to interpret timestamps in the CSV (default: America/Chicago).",
+    )
+    p_import.add_argument(
+        "-m",
+        "--merge-policy",
+        default="skip",
+        choices=["skip", "overwrite"],
+        help="On duplicate bar keys, either skip or overwrite existing records.",
+    )
+    p_import.set_defaults(_handler="import-csv")
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    configure_logging(settings.log_level)
+
+    parser = build_parser()
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+
+    handler = getattr(args, "_handler", None)
+    if handler == "init-db":
+        return init_db()
+    if handler == "import-csv":
+        return import_csv_contract_only(args, parser)
+
+    logger.error("No handler found for command: %s", args.command)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

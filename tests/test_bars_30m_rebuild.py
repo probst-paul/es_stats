@@ -1,1 +1,155 @@
-from __future__ import annotationsimport sqlite3from pathlib import Pathfrom es_stats.repositories.bars_1m_repo import upsert_bars_1mfrom es_stats.repositories.bars_30m_repo import rebuild_bars_30m_rangefrom es_stats.repositories.imports_repo import insert_import_runfrom es_stats.repositories.instruments_repo import ensure_instrumentfrom es_stats.repositories.sql_loader import load_sqldef _init_db(db_path: Path) -> sqlite3.Connection:    conn = sqlite3.connect(str(db_path))    conn.execute("PRAGMA foreign_keys = ON;")    conn.executescript(load_sql("schema/001_init.sql"))    return conndef test_rebuild_bars_30m_aggregates_trades_count(tmp_path: Path):    conn = _init_db(tmp_path / "t.sqlite3")    try:        instrument_id = ensure_instrument(conn, "ES")        import_id = insert_import_run(            conn,            {                "instrument_id": instrument_id,                "source_name": "test.csv",                "source_hash": None,                "input_timezone": "America/Chicago",                "bar_interval_seconds": 60,                "merge_policy": "skip",                "started_at_utc": 1700000000,                "status": "failed",                "error_summary": None,            },        )        # Create 30 minutes worth of 1m bars (bar_count=30 => is_complete=1)        rows = []        for i in range(30):            rows.append(                {                    "instrument_id": instrument_id,                    "ts_start_utc": 1700000000 + 60 * i,                    "trading_date_ct_int": 20250101,                    "ct_minute_of_day": 510 + i,  # 08:30 CT start bucket                    "open": 100.0,                    "high": 101.0,                    "low": 99.0,                    "close": 100.5,                    "volume": 10,                    "trades_count": 2,                    "source_import_id": import_id,                }            )        upsert_bars_1m(conn, rows, merge_policy="skip")        counts = rebuild_bars_30m_range(            conn,            instrument_id=instrument_id,            td_min=20250101,            td_max=20250101,            derived_from_import_id=import_id,        )        assert counts.inserted >= 1        r = conn.execute(            """            SELECT bar_count_1m, is_complete, volume, trades_count            FROM bars_30m            WHERE instrument_id = ?              AND trading_date_ct_int = ?              AND bucket_ct_minute_of_day = 510;            """,            (instrument_id, 20250101),        ).fetchone()        assert int(r[0]) == 30        assert int(r[1]) == 1        assert int(r[2]) == 300          # 30 * 10        assert int(r[3]) == 60           # 30 * 2    finally:        conn.close()def test_rebuild_bars_30m_partial_bucket_is_incomplete(tmp_path: Path):    conn = _init_db(tmp_path / "t.sqlite3")    try:        instrument_id = ensure_instrument(conn, "ES")        import_id = insert_import_run(            conn,            {                "instrument_id": instrument_id,                "source_name": "test.csv",                "source_hash": None,                "input_timezone": "America/Chicago",                "bar_interval_seconds": 60,                "merge_policy": "skip",                "started_at_utc": 1700000000,                "status": "failed",                "error_summary": None,            },        )        # Only 10 minutes in the bucket => is_complete=0, bar_count=10        rows = []        for i in range(10):            rows.append(                {                    "instrument_id": instrument_id,                    "ts_start_utc": 1700000000 + 60 * i,                    "trading_date_ct_int": 20250101,                    "ct_minute_of_day": 510 + i,                    "open": 100.0,                    "high": 101.0,                    "low": 99.0,                    "close": 100.5,                    "volume": 10,                    "trades_count": 3,                    "source_import_id": import_id,                }            )        upsert_bars_1m(conn, rows, merge_policy="skip")        rebuild_bars_30m_range(            conn,            instrument_id=instrument_id,            td_min=20250101,            td_max=20250101,            derived_from_import_id=import_id,        )        r = conn.execute(            """            SELECT bar_count_1m, is_complete, volume, trades_count            FROM bars_30m            WHERE instrument_id = ?              AND trading_date_ct_int = ?              AND bucket_ct_minute_of_day = 510;            """,            (instrument_id, 20250101),        ).fetchone()        assert int(r[0]) == 10        assert int(r[1]) == 0        assert int(r[2]) == 100          # 10 * 10        assert int(r[3]) == 30           # 10 * 3    finally:        conn.close()
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from es_stats.repositories.bars_1m_repo import upsert_bars_1m
+from es_stats.repositories.bars_30m_repo import rebuild_bars_30m_range
+from es_stats.repositories.imports_repo import insert_import_run
+from es_stats.repositories.instruments_repo import ensure_instrument
+from es_stats.repositories.sql_loader import load_sql
+
+
+def _init_db(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.executescript(load_sql("schema/001_init.sql"))
+    return conn
+
+
+def test_rebuild_bars_30m_aggregates_trades_count(tmp_path: Path):
+    conn = _init_db(tmp_path / "t.sqlite3")
+    try:
+        instrument_id = ensure_instrument(conn, "ES")
+
+        import_id = insert_import_run(
+            conn,
+            {
+                "instrument_id": instrument_id,
+                "source_name": "test.csv",
+                "source_hash": None,
+                "input_timezone": "America/Chicago",
+                "bar_interval_seconds": 60,
+                "merge_policy": "skip",
+                "started_at_utc": 1700000000,
+                "status": "failed",
+                "error_summary": None,
+            },
+        )
+
+        # Create 30 minutes worth of 1m bars (bar_count=30 => is_complete=1)
+        rows = []
+        for i in range(30):
+            rows.append(
+                {
+                    "instrument_id": instrument_id,
+                    "ts_start_utc": 1700000000 + 60 * i,
+                    "trading_date_ct_int": 20250101,
+                    "ct_minute_of_day": 510 + i,  # 08:30 CT start bucket
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.5,
+                    "volume": 10,
+                    "trades_count": 2,
+                    "source_import_id": import_id,
+                }
+            )
+
+        upsert_bars_1m(conn, rows, merge_policy="skip")
+
+        counts = rebuild_bars_30m_range(
+            conn,
+            instrument_id=instrument_id,
+            td_min=20250101,
+            td_max=20250101,
+            derived_from_import_id=import_id,
+        )
+        assert counts.inserted >= 1
+
+        r = conn.execute(
+            """
+            SELECT bar_count_1m, is_complete, volume, trades_count
+            FROM bars_30m
+            WHERE instrument_id = ?
+              AND trading_date_ct_int = ?
+              AND bucket_ct_minute_of_day = 510;
+            """,
+            (instrument_id, 20250101),
+        ).fetchone()
+
+        assert int(r[0]) == 30
+        assert int(r[1]) == 1
+        assert int(r[2]) == 300          # 30 * 10
+        assert int(r[3]) == 60           # 30 * 2
+
+    finally:
+        conn.close()
+
+
+def test_rebuild_bars_30m_partial_bucket_is_incomplete(tmp_path: Path):
+    conn = _init_db(tmp_path / "t.sqlite3")
+    try:
+        instrument_id = ensure_instrument(conn, "ES")
+
+        import_id = insert_import_run(
+            conn,
+            {
+                "instrument_id": instrument_id,
+                "source_name": "test.csv",
+                "source_hash": None,
+                "input_timezone": "America/Chicago",
+                "bar_interval_seconds": 60,
+                "merge_policy": "skip",
+                "started_at_utc": 1700000000,
+                "status": "failed",
+                "error_summary": None,
+            },
+        )
+
+        # Only 10 minutes in the bucket => is_complete=0, bar_count=10
+        rows = []
+        for i in range(10):
+            rows.append(
+                {
+                    "instrument_id": instrument_id,
+                    "ts_start_utc": 1700000000 + 60 * i,
+                    "trading_date_ct_int": 20250101,
+                    "ct_minute_of_day": 510 + i,
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.5,
+                    "volume": 10,
+                    "trades_count": 3,
+                    "source_import_id": import_id,
+                }
+            )
+
+        upsert_bars_1m(conn, rows, merge_policy="skip")
+        rebuild_bars_30m_range(
+            conn,
+            instrument_id=instrument_id,
+            td_min=20250101,
+            td_max=20250101,
+            derived_from_import_id=import_id,
+        )
+
+        r = conn.execute(
+            """
+            SELECT bar_count_1m, is_complete, volume, trades_count
+            FROM bars_30m
+            WHERE instrument_id = ?
+              AND trading_date_ct_int = ?
+              AND bucket_ct_minute_of_day = 510;
+            """,
+            (instrument_id, 20250101),
+        ).fetchone()
+
+        assert int(r[0]) == 10
+        assert int(r[1]) == 0
+        assert int(r[2]) == 100          # 10 * 10
+        assert int(r[3]) == 30           # 10 * 3
+
+    finally:
+        conn.close()

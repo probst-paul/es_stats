@@ -1,1 +1,13 @@
-CREATE TEMP TABLE IF NOT EXISTS tmp_bars_1m (  instrument_id        INTEGER NOT NULL,  ts_start_utc         INTEGER NOT NULL,  trading_date_ct_int  INTEGER NOT NULL,  ct_minute_of_day     INTEGER NOT NULL,  open                 REAL    NOT NULL,  high                 REAL    NOT NULL,  low                  REAL    NOT NULL,  close                REAL    NOT NULL,  volume               INTEGER NOT NULL,  trades_count         INTEGER NOT NULL,  source_import_id     INTEGER NULL);
+CREATE TEMP TABLE IF NOT EXISTS tmp_bars_1m (
+  instrument_id        INTEGER NOT NULL,
+  ts_start_utc         INTEGER NOT NULL,
+  trading_date_ct_int  INTEGER NOT NULL,
+  ct_minute_of_day     INTEGER NOT NULL,
+  open                 REAL    NOT NULL,
+  high                 REAL    NOT NULL,
+  low                  REAL    NOT NULL,
+  close                REAL    NOT NULL,
+  volume               INTEGER NOT NULL,
+  trades_count         INTEGER NOT NULL,
+  source_import_id     INTEGER NULL
+);
