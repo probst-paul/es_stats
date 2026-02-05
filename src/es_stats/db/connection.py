@@ -1,81 +1,65 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Iterator
+
+import psycopg
 
 from es_stats.config.settings import settings
 
 
-def _resolve_db_path(explicit: Path | None = None) -> Path:
+def _resolve_database_url(explicit: str | None = None) -> str:
     """
-    Resolve the SQLite DB path.
+    Resolve the Postgres connection URL.
 
     Precedence:
       1) explicit argument (if provided)
-      2) ES_STATS_DB_PATH env var (useful for tests/CI)
-      3) settings.db_path
+      2) ES_STATS_DATABASE_URL env var
+      3) DATABASE_URL env var (Render default)
+      4) settings.database_url
     """
-    if explicit is not None:
-        return explicit
+    if explicit is not None and explicit.strip():
+        return explicit.strip()
 
-    override = os.environ.get("ES_STATS_DB_PATH")
-    if override:
-        return Path(override)
+    for env_name in ("ES_STATS_DATABASE_URL", "DATABASE_URL"):
+        override = os.environ.get(env_name)
+        if override and override.strip():
+            return override.strip()
 
-    return settings.db_path
+    return settings.database_url
 
 
-def connect_sqlite(db_path: Path) -> sqlite3.Connection:
-    """
-    Open a SQLite connection with consistent pragmas.
-
-    Notes:
-    - foreign_keys must be enabled per connection in SQLite
-    - WAL improves read concurrency (useful for a web app)
-    - busy_timeout reduces 'database is locked' failures under light contention
-    """
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(
-        str(db_path),
-        detect_types=sqlite3.PARSE_DECLTYPES,
-        # Avoid thread-affinity surprises in server contexts.
-        # Do not share the same connection across requests.
-        check_same_thread=False,
-    )
-    conn.row_factory = sqlite3.Row
-
-    # Pragmas (applied per connection)
-    conn.execute("PRAGMA foreign_keys = ON;")
-    conn.execute("PRAGMA journal_mode = WAL;")
-    conn.execute("PRAGMA synchronous = NORMAL;")
-    conn.execute("PRAGMA busy_timeout = 5000;")
-    conn.execute("PRAGMA temp_store = MEMORY;")
-
+def connect_postgres(database_url: str) -> psycopg.Connection:
+    """Open a PostgreSQL connection."""
+    conn = psycopg.connect(database_url)
+    # Keep all timestamps/epoch values interpreted in UTC.
+    conn.execute("SET TIME ZONE 'UTC';")
     return conn
 
 
-def connect_default() -> sqlite3.Connection:
-    """Connect using resolved default DB path (supports ES_STATS_DB_PATH override)."""
-    return connect_sqlite(_resolve_db_path())
+def connect_default() -> psycopg.Connection:
+    """Connect using resolved default DB URL."""
+    return connect_postgres(_resolve_database_url())
+
+
+def execute_script(conn: psycopg.Connection, sql_script: str) -> None:
+    """Execute a SQL script containing multiple statements."""
+    for statement in sql_script.split(";"):
+        stmt = statement.strip()
+        if not stmt:
+            continue
+        conn.execute(f"{stmt};")
 
 
 @contextmanager
-def connection(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
+def connection(database_url: str | None = None) -> Iterator[psycopg.Connection]:
     """
     Context manager for a short-lived connection.
 
     Commits on success, rolls back on exception, always closes.
-
-    Usage:
-      with connection() as conn:
-          ...
     """
-    resolved = _resolve_db_path(db_path)
-    conn = connect_sqlite(resolved)
+    conn = connect_postgres(_resolve_database_url(database_url))
     try:
         yield conn
         conn.commit()

@@ -1,10 +1,6 @@
-PRAGMA foreign_keys = ON;
-
-BEGIN;
-
 -- instruments
 CREATE TABLE IF NOT EXISTS instruments (
-  instrument_id INTEGER PRIMARY KEY,
+  instrument_id BIGSERIAL PRIMARY KEY,
   symbol        TEXT    NOT NULL UNIQUE,
   description   TEXT    NULL,
   tz_exchange   TEXT    NOT NULL DEFAULT 'America/Chicago'
@@ -12,8 +8,8 @@ CREATE TABLE IF NOT EXISTS instruments (
 
 -- imports (audit trail)
 CREATE TABLE IF NOT EXISTS imports (
-  import_id            INTEGER PRIMARY KEY,
-  instrument_id        INTEGER NOT NULL,
+  import_id            BIGSERIAL PRIMARY KEY,
+  instrument_id        BIGINT NOT NULL,
   source_name          TEXT    NOT NULL,
   source_hash          TEXT    NULL,
   input_timezone       TEXT    NOT NULL DEFAULT 'America/Chicago',
@@ -21,11 +17,11 @@ CREATE TABLE IF NOT EXISTS imports (
 
   merge_policy         TEXT    NOT NULL CHECK (merge_policy IN ('skip','overwrite')),
 
-  started_at_utc       INTEGER NOT NULL,
-  finished_at_utc      INTEGER NULL,
+  started_at_utc       BIGINT  NOT NULL,
+  finished_at_utc      BIGINT  NULL,
 
-  ts_min_utc           INTEGER NULL,
-  ts_max_utc           INTEGER NULL,
+  ts_min_utc           BIGINT  NULL,
+  ts_max_utc           BIGINT  NULL,
 
   row_count_read       INTEGER NOT NULL DEFAULT 0,
   row_count_inserted   INTEGER NOT NULL DEFAULT 0,
@@ -43,20 +39,20 @@ CREATE INDEX IF NOT EXISTS idx_imports_instrument_started
 
 -- bars_1m (canonical)
 CREATE TABLE IF NOT EXISTS bars_1m (
-  instrument_id       INTEGER NOT NULL,
-  ts_start_utc        INTEGER NOT NULL,
+  instrument_id       BIGINT NOT NULL,
+  ts_start_utc        BIGINT NOT NULL,
 
   trading_date_ct_int INTEGER NOT NULL,
   ct_minute_of_day    INTEGER NOT NULL CHECK (ct_minute_of_day BETWEEN 0 AND 1439),
 
-  open                REAL    NOT NULL,
-  high                REAL    NOT NULL,
-  low                 REAL    NOT NULL,
-  close               REAL    NOT NULL,
-  volume              INTEGER NOT NULL CHECK (volume >= 0),
-  trades_count        INTEGER NOT NULL CHECK (trades_count >= 0),
+  open                DOUBLE PRECISION NOT NULL,
+  high                DOUBLE PRECISION NOT NULL,
+  low                 DOUBLE PRECISION NOT NULL,
+  close               DOUBLE PRECISION NOT NULL,
+  volume              BIGINT NOT NULL CHECK (volume >= 0),
+  trades_count        BIGINT NOT NULL CHECK (trades_count >= 0),
 
-  source_import_id    INTEGER NULL,
+  source_import_id    BIGINT NULL,
 
   PRIMARY KEY (instrument_id, ts_start_utc),
   FOREIGN KEY (instrument_id) REFERENCES instruments(instrument_id),
@@ -73,29 +69,29 @@ CREATE INDEX IF NOT EXISTS idx_bars_1m_inst_day_ts
 
 -- bars_30m (derived)
 CREATE TABLE IF NOT EXISTS bars_30m (
-  instrument_id          INTEGER NOT NULL,
-  bucket_start_utc       INTEGER NOT NULL,
+  instrument_id           BIGINT NOT NULL,
+  bucket_start_utc        BIGINT NOT NULL,
 
-  trading_date_ct_int    INTEGER NOT NULL,
+  trading_date_ct_int     INTEGER NOT NULL,
   bucket_ct_minute_of_day INTEGER NOT NULL
     CHECK (bucket_ct_minute_of_day BETWEEN 0 AND 1439)
     CHECK (bucket_ct_minute_of_day % 30 = 0),
 
-  session                TEXT    NULL CHECK (session IN ('ON','RTH') OR session IS NULL),
-  period_index           INTEGER NULL,
-  tpo                    TEXT    NULL,
+  session                 TEXT    NULL CHECK (session IN ('ON','RTH') OR session IS NULL),
+  period_index            INTEGER NULL,
+  tpo                     TEXT    NULL,
 
-  open                   REAL    NOT NULL,
-  high                   REAL    NOT NULL,
-  low                    REAL    NOT NULL,
-  close                  REAL    NOT NULL,
-  volume                 INTEGER NOT NULL CHECK (volume >= 0),
-  trades_count           INTEGER NOT NULL CHECK (trades_count >= 0),
+  open                    DOUBLE PRECISION NOT NULL,
+  high                    DOUBLE PRECISION NOT NULL,
+  low                     DOUBLE PRECISION NOT NULL,
+  close                   DOUBLE PRECISION NOT NULL,
+  volume                  BIGINT NOT NULL CHECK (volume >= 0),
+  trades_count            BIGINT NOT NULL CHECK (trades_count >= 0),
 
-  bar_count_1m           INTEGER NOT NULL CHECK (bar_count_1m BETWEEN 0 AND 30),
-  is_complete            INTEGER NOT NULL DEFAULT 0 CHECK (is_complete IN (0,1)),
+  bar_count_1m            INTEGER NOT NULL CHECK (bar_count_1m BETWEEN 0 AND 30),
+  is_complete             INTEGER NOT NULL DEFAULT 0 CHECK (is_complete IN (0,1)),
 
-  derived_from_import_id INTEGER NULL,
+  derived_from_import_id  BIGINT NULL,
 
   PRIMARY KEY (instrument_id, bucket_start_utc),
   FOREIGN KEY (instrument_id) REFERENCES instruments(instrument_id),
@@ -109,5 +105,3 @@ CREATE INDEX IF NOT EXISTS idx_bars_30m_inst_day_ts
 
 CREATE INDEX IF NOT EXISTS idx_bars_30m_inst_day_session_period
   ON bars_30m(instrument_id, trading_date_ct_int, session, period_index);
-
-COMMIT;

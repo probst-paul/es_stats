@@ -26,15 +26,13 @@ class SqlLoader:
 
         # Basic guardrail: we only load .sql files
         if not rel.endswith(".sql"):
-            raise ValueError(f"SQL loader expected a .sql file, got: {
-                             relative_path!r}")
+            raise ValueError(f"SQL loader expected a .sql file, got: {relative_path!r}")
 
         full_path = (self.base_dir / rel).resolve()
 
         if not full_path.exists():
             raise SqlFileNotFoundError(
-                f"SQL file not found: {relative_path!r} (resolved to {
-                    full_path})"
+                f"SQL file not found: {relative_path!r} (resolved to {full_path})"
             )
 
         return full_path.read_text(encoding="utf-8")

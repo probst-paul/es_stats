@@ -2,7 +2,7 @@ WITH agg AS (
   SELECT
     instrument_id,
     trading_date_ct_int,
-    (ct_minute_of_day - (ct_minute_of_day % 30)) AS bucket_ct_minute_of_day,
+    (ct_minute_of_day - (ct_minute_of_day %% 30)) AS bucket_ct_minute_of_day,
     MIN(ts_start_utc) AS bucket_start_utc,
     MAX(ts_start_utc) AS bucket_last_utc,
     MAX(high) AS high,
@@ -11,8 +11,8 @@ WITH agg AS (
     SUM(trades_count) AS trades_count,
     COUNT(*) AS bar_count_1m
   FROM bars_1m
-  WHERE instrument_id = :instrument_id
-    AND trading_date_ct_int BETWEEN :td_min AND :td_max
+  WHERE instrument_id = %(instrument_id)s
+    AND trading_date_ct_int BETWEEN %(td_min)s AND %(td_max)s
   GROUP BY instrument_id, trading_date_ct_int, bucket_ct_minute_of_day
 ),
 oc AS (
@@ -41,7 +41,7 @@ classified AS (
       ELSE NULL
     END AS session,
 
-    /* NOTE: force integer period_index (SQLite / is floating division) */
+    /* NOTE: force integer period_index */
     CASE
       WHEN bucket_ct_minute_of_day >= 1020 THEN CAST((bucket_ct_minute_of_day - 1020) / 30 AS INTEGER)
       WHEN bucket_ct_minute_of_day < 510  THEN CAST((420 + bucket_ct_minute_of_day) / 30 AS INTEGER)
@@ -60,7 +60,7 @@ classified AS (
               ELSE CAST((420 + bucket_ct_minute_of_day) / 30 AS INTEGER)
             END
           ) BETWEEN 0 AND 25 THEN
-            CHAR(97 + (
+            CHR(97 + (
               CASE
                 WHEN bucket_ct_minute_of_day >= 1020 THEN CAST((bucket_ct_minute_of_day - 1020) / 30 AS INTEGER)
                 ELSE CAST((420 + bucket_ct_minute_of_day) / 30 AS INTEGER)
@@ -72,28 +72,28 @@ classified AS (
               ELSE CAST((420 + bucket_ct_minute_of_day) / 30 AS INTEGER)
             END
           ) BETWEEN 26 AND 701 THEN
-            CHAR(97 + (CAST((
+            CHR(97 + (CAST((
               CASE
                 WHEN bucket_ct_minute_of_day >= 1020 THEN CAST((bucket_ct_minute_of_day - 1020) / 30 AS INTEGER)
                 ELSE CAST((420 + bucket_ct_minute_of_day) / 30 AS INTEGER)
               END
             ) / 26 AS INTEGER) - 1))
-            || CHAR(97 + ((
+            || CHR(97 + ((
               CASE
                 WHEN bucket_ct_minute_of_day >= 1020 THEN CAST((bucket_ct_minute_of_day - 1020) / 30 AS INTEGER)
                 ELSE CAST((420 + bucket_ct_minute_of_day) / 30 AS INTEGER)
               END
-            ) % 26))
+            ) %% 26))
           ELSE NULL
         END
 
       WHEN (bucket_ct_minute_of_day >= 510 AND bucket_ct_minute_of_day <= 930) THEN
         CASE
           WHEN CAST((bucket_ct_minute_of_day - 510) / 30 AS INTEGER) BETWEEN 0 AND 25 THEN
-            CHAR(65 + CAST((bucket_ct_minute_of_day - 510) / 30 AS INTEGER))
+            CHR(65 + CAST((bucket_ct_minute_of_day - 510) / 30 AS INTEGER))
           WHEN CAST((bucket_ct_minute_of_day - 510) / 30 AS INTEGER) BETWEEN 26 AND 701 THEN
-            CHAR(65 + (CAST(CAST((bucket_ct_minute_of_day - 510) / 30 AS INTEGER) / 26 AS INTEGER) - 1))
-            || CHAR(65 + (CAST((bucket_ct_minute_of_day - 510) / 30 AS INTEGER) % 26))
+            CHR(65 + (CAST(CAST((bucket_ct_minute_of_day - 510) / 30 AS INTEGER) / 26 AS INTEGER) - 1))
+            || CHR(65 + (CAST((bucket_ct_minute_of_day - 510) / 30 AS INTEGER) %% 26))
           ELSE NULL
         END
 
@@ -135,5 +135,5 @@ SELECT
   trades_count,
   bar_count_1m,
   is_complete,
-  :derived_from_import_id
+  %(derived_from_import_id)s
 FROM classified;

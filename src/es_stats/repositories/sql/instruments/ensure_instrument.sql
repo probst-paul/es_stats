@@ -1,4 +1,4 @@
 INSERT INTO instruments (symbol)
-VALUES (:symbol)
-ON CONFLICT(symbol) DO UPDATE SET symbol = excluded.symbol
+VALUES (%(symbol)s)
+ON CONFLICT(symbol) DO UPDATE SET symbol = EXCLUDED.symbol
 RETURNING instrument_id;

@@ -8,7 +8,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from es_stats.config.settings import settings
-from es_stats.db.connection import connect_default, connection
+from es_stats.db.connection import connection, execute_script
 from es_stats.logging import configure_logging
 from es_stats.repositories.bars_1m_repo import upsert_bars_1m
 from es_stats.repositories.bars_30m_repo import rebuild_bars_30m_range
@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 
 def init_db() -> int:
     sql = load_sql("schema/001_init.sql")
-    with connect_default() as conn:
-        conn.executescript(sql)
-    logger.info("Initialized database at %s", settings.db_path)
+    with connection() as conn:
+        execute_script(conn, sql)
+    logger.info("Initialized database schema")
     return 0
 
 
@@ -34,8 +34,7 @@ def _validate_timezone(tz_name: str, parser: argparse.ArgumentParser) -> None:
         ZoneInfo(tz_name)
     except Exception:
         parser.error(
-            f"Invalid timezone: {
-                tz_name!r}. Must be an IANA name like 'America/Chicago'."
+            f"Invalid timezone: {tz_name!r}. Must be an IANA name like 'America/Chicago'."
         )
 
 
@@ -65,14 +64,11 @@ def _median_delta_seconds(ts_start_utc_values: list[int]) -> int:
             "Cannot validate 60s interval: fewer than 2 unique timestamps in accepted rows."
         )
 
-    deltas = [
-        b - a
-        for a, b in zip(ts_unique_sorted, ts_unique_sorted[1:])
-        if b > a
-    ]
+    deltas = [b - a for a, b in zip(ts_unique_sorted, ts_unique_sorted[1:]) if b > a]
     if not deltas:
         raise ValueError(
-            "Cannot validate 60s interval: no positive timestamp deltas found.")
+            "Cannot validate 60s interval: no positive timestamp deltas found."
+        )
 
     deltas.sort()
     return deltas[len(deltas) // 2]
@@ -80,15 +76,10 @@ def _median_delta_seconds(ts_start_utc_values: list[int]) -> int:
 
 def import_csv_contract_only(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     """
-    Phase 3.6: validate args, parse/validate CSV, compute time-derived fields,
+    Validate args, parse/validate CSV, compute time-derived fields,
     enforce canonical 60s interval, upsert into bars_1m (skip/overwrite),
     rebuild bars_30m for the affected trading-date range (set-based),
     and finalize the import audit row with inserted/updated/rejected counts.
-
-    Interval enforcement:
-      - derive ts_start_utc per accepted row
-      - compute deltas between consecutive UNIQUE timestamps
-      - median delta MUST equal 60 seconds
     """
     _validate_import_args(args, parser)
 
@@ -122,12 +113,10 @@ def import_csv_contract_only(args: argparse.Namespace, parser: argparse.Argument
             derived = [compute_time_fields(b.dt, args.timezone) for b in bars]
 
             # Enforce canonical 60s cadence
-            median_delta = _median_delta_seconds(
-                [t.ts_start_utc for t in derived])
+            median_delta = _median_delta_seconds([t.ts_start_utc for t in derived])
             if median_delta != 60:
                 raise ValueError(
-                    f"Detected median bar interval {
-                        median_delta}s; expected 60s for canonical bars_1m import."
+                    f"Detected median bar interval {median_delta}s; expected 60s for canonical bars_1m import."
                 )
 
             # Build rows for bars_1m upsert
@@ -149,8 +138,7 @@ def import_csv_contract_only(args: argparse.Namespace, parser: argparse.Argument
                     }
                 )
 
-            counts_1m = upsert_bars_1m(
-                conn, rows_1m, merge_policy=args.merge_policy)
+            counts_1m = upsert_bars_1m(conn, rows_1m, merge_policy=args.merge_policy)
 
             ts_min = min(t.ts_start_utc for t in derived)
             ts_max = max(t.ts_start_utc for t in derived)
@@ -253,16 +241,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="es-stats")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_init = sub.add_parser(
-        "init-db", help="Create schema in the configured SQLite database.")
+    p_init = sub.add_parser("init-db", help="Create schema in the configured Postgres database.")
     p_init.set_defaults(_handler="init-db")
 
-    p_import = sub.add_parser(
-        "import-csv", help="Import bars from CSV into SQLite (Phase 3.x).")
-    p_import.add_argument("-f", "--file", required=True,
-                          help="Path to CSV file (server/admin input).")
-    p_import.add_argument("-s", "--symbol", required=True,
-                          help="Instrument symbol (e.g., ES, NQ).")
+    p_import = sub.add_parser("import-csv", help="Import bars from CSV into Postgres.")
+    p_import.add_argument(
+        "-f", "--file", required=True, help="Path to CSV file (server/admin input)."
+    )
+    p_import.add_argument(
+        "-s", "--symbol", required=True, help="Instrument symbol (e.g., ES, NQ)."
+    )
     p_import.add_argument(
         "-t",
         "--timezone",

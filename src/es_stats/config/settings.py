@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 
 def _env(name: str, default: str) -> str:
@@ -18,15 +17,15 @@ class Settings:
 
     Design intent:
     - Keep defaults sensible for local dev.
-    - Allow overrides via environment variables for Docker/VPS.
+    - Allow overrides via environment variables for Render/VPS.
     - Avoid importing os.environ everywhere else in the codebase.
     """
 
     # Environmental name (local/dev/prod).
     env: str
 
-    # Where the SQLite DB file will live.
-    db_path: Path
+    # Postgres connection URL.
+    database_url: str
 
     # Logging level (INFO, DEBUG, etc.)
     log_level: str
@@ -38,17 +37,20 @@ def load_settings() -> Settings:
 
     Environment variables:
     - ES_STATS_ENV
-    - ES_STATS_DB_PATH
+    - ES_STATS_DATABASE_URL (preferred)
+    - DATABASE_URL (Render convention)
     - ES_STATS_LOG_LEVEL
     """
     env = _env("ES_STATS_ENV", "local")
-    db_path_str = _env("ES_STATS_DB_PATH", str(
-        Path("data") / "es_stats.sqlite3"))
+    database_url = _env(
+        "ES_STATS_DATABASE_URL",
+        _env("DATABASE_URL", "postgresql:///es_stats"),
+    )
     log_level = _env("ES_STATS_LOG_LEVEL", "INFO").upper()
 
     return Settings(
         env=env,
-        db_path=Path(db_path_str),
+        database_url=database_url,
         log_level=log_level,
     )
 

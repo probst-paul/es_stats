@@ -12,6 +12,7 @@ dependencies = [
   "fastapi>=0.110",
   "uvicorn>=0.27",
   "jinja2>=3.1",
+  "psycopg[binary]>=3.2",
 ]
 
 [tool.setuptools]

@@ -1,3 +1,1 @@
-"""
-Database utilities for es_stats (SQLite in v1).
-"""
+"""Database utilities for es_stats (PostgreSQL)."""

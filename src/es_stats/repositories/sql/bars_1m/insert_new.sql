@@ -1,4 +1,4 @@
-INSERT OR IGNORE INTO bars_1m (
+INSERT INTO bars_1m (
   instrument_id,
   ts_start_utc,
   trading_date_ct_int,
@@ -23,4 +23,5 @@ SELECT
   volume,
   trades_count,
   source_import_id
-FROM tmp_bars_1m;
+FROM tmp_bars_1m
+ON CONFLICT (instrument_id, ts_start_utc) DO NOTHING;

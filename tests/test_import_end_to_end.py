@@ -1,40 +1,20 @@
 from __future__ import annotations
 
-import sqlite3
-from pathlib import Path
+import psycopg
 
-from es_stats.repositories.sql_loader import load_sql
 from es_stats.cli.main import build_parser, import_csv_contract_only
 
 
-def _init_db(db_path: Path) -> None:
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute("PRAGMA foreign_keys = ON;")
-        conn.executescript(load_sql("schema/001_init.sql"))
-        conn.commit()
-    finally:
-        conn.close()
+def test_import_end_to_end_imports_1m_and_rebuilds_30m(
+    tmp_path,
+    monkeypatch,
+    postgres_url: str,
+    pg_conn: psycopg.Connection,
+):
+    monkeypatch.setenv("ES_STATS_DATABASE_URL", postgres_url)
 
-
-def test_import_end_to_end_imports_1m_and_rebuilds_30m(tmp_path: Path, monkeypatch):
-    # --------------------
-    # Arrange
-    # --------------------
-    db_path = tmp_path / "test.sqlite3"
-    _init_db(db_path)
-
-    # Make the app use this temp DB (your code already supports env-driven db path)
-    monkeypatch.setenv("ES_STATS_DB_PATH", str(db_path))
-
-    # Build a CSV that spans TWO 30m buckets:
-    # - 08:30..08:59 (30 rows) => complete bucket
-    # - 09:00..09:01 (2 rows)  => partial bucket
     csv_path = tmp_path / "bars.csv"
-
     lines = ["datetime,open,high,low,last,volume,# of Trades\n"]
-    # 32 rows total, 1-minute interval, all within RTH
-    # 2025-01-01 08:30 to 09:01
     start_hour, start_min = 8, 30
     for i in range(32):
         total_min = start_min + i
@@ -46,10 +26,8 @@ def test_import_end_to_end_imports_1m_and_rebuilds_30m(tmp_path: Path, monkeypat
         h = o + 1.0
         l = o - 1.0
         c = o + 0.5
-        v = 1
-        t = 1
 
-        lines.append(f"{dt},{o},{h},{l},{c},{v},{t}\n")
+        lines.append(f"{dt},{o},{h},{l},{c},1,1\n")
 
     csv_path.write_text("".join(lines))
 
@@ -68,21 +46,10 @@ def test_import_end_to_end_imports_1m_and_rebuilds_30m(tmp_path: Path, monkeypat
         ]
     )
 
-    # --------------------
-    # Act
-    # --------------------
     rc = import_csv_contract_only(args, parser)
-
-    # --------------------
-    # Assert
-    # --------------------
     assert rc == 0
 
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.row_factory = sqlite3.Row
-
-        # 1) imports audit row exists and is success
+    with psycopg.connect(postgres_url) as conn:
         imp = conn.execute(
             """
             SELECT import_id, status, row_count_read, row_count_inserted, row_count_updated
@@ -93,22 +60,17 @@ def test_import_end_to_end_imports_1m_and_rebuilds_30m(tmp_path: Path, monkeypat
         ).fetchone()
 
         assert imp is not None
-        assert imp["status"] == "success"
-        assert imp["row_count_read"] == 32
-        assert imp["row_count_inserted"] == 32
-        assert imp["row_count_updated"] == 0
+        assert imp[1] == "success"
+        assert imp[2] == 32
+        assert imp[3] == 32
+        assert imp[4] == 0
 
-        # 2) bars_1m has exactly 32 rows
-        c1m = conn.execute(
-            "SELECT COUNT(*) AS n FROM bars_1m;").fetchone()["n"]
+        c1m = conn.execute("SELECT COUNT(*) FROM bars_1m;").fetchone()[0]
         assert c1m == 32
 
-        # 3) bars_30m has 2 rows (08:30 bucket + 09:00 bucket)
-        c30m = conn.execute(
-            "SELECT COUNT(*) AS n FROM bars_30m;").fetchone()["n"]
+        c30m = conn.execute("SELECT COUNT(*) FROM bars_30m;").fetchone()[0]
         assert c30m == 2
 
-        # 4) Verify the complete 08:30 bucket (bucket_ct_minute_of_day = 510)
         r_0830 = conn.execute(
             """
             SELECT bucket_ct_minute_of_day, bar_count_1m, is_complete,
@@ -120,24 +82,17 @@ def test_import_end_to_end_imports_1m_and_rebuilds_30m(tmp_path: Path, monkeypat
         ).fetchone()
 
         assert r_0830 is not None
-        assert int(r_0830["bar_count_1m"]) == 30
-        assert int(r_0830["is_complete"]) == 1
-        # open = first open in that bucket (i=0 => 100.0)
-        assert float(r_0830["open"]) == 100.0
-        # close = last close in that bucket (i=29 => 129.5)
-        assert float(r_0830["close"]) == 129.5
-        # high = max(high) (i=29 => 130.0)
-        assert float(r_0830["high"]) == 130.0
-        # low = min(low) (i=0 => 99.0)
-        assert float(r_0830["low"]) == 99.0
-        # volume sum = 30 * 1
-        assert int(r_0830["volume"]) == 30
-        # trades_count sum = 30 * 1
-        assert int(r_0830["trades_count"]) == 30
-        assert r_0830["session"] == "RTH"
-        assert int(r_0830["period_index"]) == 0
+        assert int(r_0830[1]) == 30
+        assert int(r_0830[2]) == 1
+        assert float(r_0830[3]) == 100.0
+        assert float(r_0830[6]) == 129.5
+        assert float(r_0830[4]) == 130.0
+        assert float(r_0830[5]) == 99.0
+        assert int(r_0830[7]) == 30
+        assert int(r_0830[8]) == 30
+        assert r_0830[9] == "RTH"
+        assert int(r_0830[10]) == 0
 
-        # 5) Verify the partial 09:00 bucket (bucket_ct_minute_of_day = 540)
         r_0900 = conn.execute(
             """
             SELECT bucket_ct_minute_of_day, bar_count_1m, is_complete,
@@ -149,22 +104,13 @@ def test_import_end_to_end_imports_1m_and_rebuilds_30m(tmp_path: Path, monkeypat
         ).fetchone()
 
         assert r_0900 is not None
-        assert int(r_0900["bar_count_1m"]) == 2
-        assert int(r_0900["is_complete"]) == 0
-        # open = i=30 => 130.0
-        assert float(r_0900["open"]) == 130.0
-        # close = i=31 => 131.5
-        assert float(r_0900["close"]) == 131.5
-        # high = max(high) among i=30..31 => i=31 high = 132.0
-        assert float(r_0900["high"]) == 132.0
-        # low = min(low) among i=30..31 => i=30 low = 129.0
-        assert float(r_0900["low"]) == 129.0
-        # volume sum = 2 * 1
-        assert int(r_0900["volume"]) == 2
-        # trades_count sum = 2 * 1
-        assert int(r_0900["trades_count"]) == 2
-        assert r_0900["session"] == "RTH"
-        assert int(r_0900["period_index"]) == 1
-
-    finally:
-        conn.close()
+        assert int(r_0900[1]) == 2
+        assert int(r_0900[2]) == 0
+        assert float(r_0900[3]) == 130.0
+        assert float(r_0900[6]) == 131.5
+        assert float(r_0900[4]) == 132.0
+        assert float(r_0900[5]) == 129.0
+        assert int(r_0900[7]) == 2
+        assert int(r_0900[8]) == 2
+        assert r_0900[9] == "RTH"
+        assert int(r_0900[10]) == 1

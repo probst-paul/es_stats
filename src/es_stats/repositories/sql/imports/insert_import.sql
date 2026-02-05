@@ -16,13 +16,13 @@ INSERT INTO imports (
   status,
   error_summary
 ) VALUES (
-  :instrument_id,
-  :source_name,
-  :source_hash,
-  :input_timezone,
-  :bar_interval_seconds,
-  :merge_policy,
-  :started_at_utc,
+  %(instrument_id)s,
+  %(source_name)s,
+  %(source_hash)s,
+  %(input_timezone)s,
+  %(bar_interval_seconds)s,
+  %(merge_policy)s,
+  %(started_at_utc)s,
   NULL,
   NULL,
   NULL,
@@ -30,7 +30,7 @@ INSERT INTO imports (
   0,
   0,
   0,
-  :status,
-  :error_summary
+  %(status)s,
+  %(error_summary)s
 )
 RETURNING import_id;

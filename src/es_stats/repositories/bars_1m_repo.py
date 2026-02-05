@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from typing import Iterable
+
+import psycopg
 
 from es_stats.repositories.sql_loader import load_sql
 
@@ -14,7 +15,7 @@ class UpsertCounts:
 
 
 def upsert_bars_1m(
-    conn: sqlite3.Connection,
+    conn: psycopg.Connection,
     rows: Iterable[dict],
     *,
     merge_policy: str,  # "skip" | "overwrite"
@@ -22,11 +23,11 @@ def upsert_bars_1m(
     """
     Upsert canonical 1-minute bars using a temp table + set-based DML.
 
-    Compatible approach (works on older SQLite that lacks ON CONFLICT DO ...):
+    Strategy:
     - load rows into TEMP tmp_bars_1m
     - count how many are new vs existing (via joins)
     - if overwrite: UPDATE existing rows from temp (set-based)
-    - INSERT OR IGNORE new rows from temp
+    - INSERT new rows with ON CONFLICT DO NOTHING
 
     Counts:
     - inserted = number of tmp rows that did not already exist in bars_1m
@@ -34,8 +35,9 @@ def upsert_bars_1m(
       (counts key-matches; does not attempt to detect "no-op" updates)
     """
     if merge_policy not in ("skip", "overwrite"):
-        raise ValueError(f"merge_policy must be 'skip' or 'overwrite', got: {
-                         merge_policy!r}")
+        raise ValueError(
+            f"merge_policy must be 'skip' or 'overwrite', got: {merge_policy!r}"
+        )
 
     conn.execute(load_sql("bars_1m/create_temp.sql"))
     conn.execute(load_sql("bars_1m/clear_temp.sql"))
@@ -45,18 +47,19 @@ def upsert_bars_1m(
         return UpsertCounts(inserted=0, updated=0)
 
     # Stage into temp table (must include trades_count)
-    conn.executemany(
-        """
-        INSERT INTO tmp_bars_1m (
-          instrument_id, ts_start_utc, trading_date_ct_int, ct_minute_of_day,
-          open, high, low, close, volume, trades_count, source_import_id
-        ) VALUES (
-          :instrument_id, :ts_start_utc, :trading_date_ct_int, :ct_minute_of_day,
-          :open, :high, :low, :close, :volume, :trades_count, :source_import_id
-        );
-        """,
-        rows_list,
-    )
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO tmp_bars_1m (
+              instrument_id, ts_start_utc, trading_date_ct_int, ct_minute_of_day,
+              open, high, low, close, volume, trades_count, source_import_id
+            ) VALUES (
+              %(instrument_id)s, %(ts_start_utc)s, %(trading_date_ct_int)s, %(ct_minute_of_day)s,
+              %(open)s, %(high)s, %(low)s, %(close)s, %(volume)s, %(trades_count)s, %(source_import_id)s
+            );
+            """,
+            rows_list,
+        )
 
     # Compute counts before mutating bars_1m
     inserted = conn.execute(
