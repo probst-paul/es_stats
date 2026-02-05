@@ -1,1 +1,179 @@
-# Project ChecklistThis checklist is organized by phase. Each phase has entry and completion criteria to keep work sequenced and verifiable.---## Phase 0 — Time rules and foundational decisions### GoalsLock and document the time/session/bucketing rules that drive schema and ingestion.### Completed- [x] Choose canonical interval: 1-minute bars- [x] Choose derived interval: 30-minute bars- [x] Define session boundaries (CT):  - [x] ON: 17:00:00–08:29:59  - [x] RTH: 08:30:00–15:59:59- [x] Define trading date rollover (CT 17:00 -> next trading date)- [x] Choose stored timestamp representation: `ts_start_utc` epoch seconds INTEGER- [x] Decide CT helper fields:  - [x] `trading_date_ct_int` (YYYYMMDD integer)  - [x] `ct_minute_of_day` (0..1439)- [x] Define 30-minute bucket alignment (CT wall-clock half-hours)- [x] Define 30m `period_index` rules for ON and RTH- [x] Confirm RTH includes 15:30–16:00 bucket; 16:00–16:59 is out-of-session in v1### Deliverables- [x] `docs/time_rules.md`- [x] `docs/decisions.md`### Deferred- [ ] Define “breach” precisely for rolling breach analytics (up/down/either; strict vs touch)- [ ] Decide whether early closes/holidays must be modeled for v1---## Phase 1 — Project skeleton and architecture### GoalsCreate the repo structure and boundaries that prevent coupling and rework.### Checklist- [x] Create `src/` application structure (domain / services / repositories / web / cli)- [x] Add configuration loader (env-driven settings)- [x] Add SQL loader utility for “loaded repositories”- [x] Establish logging approach (simple, consistent)- [x] Add test harness (pytest) and `tests/` layout- [x] Add basic scripts/hooks (test runner)### Deliverables- [x] File tree in place (documented in README)- [x] “Hello page” route renders a template (FastAPI + templates)- [x] One minimal CLI command wired (even if it’s stubbed)---## Phase 2 — Data model, schema spec, and schema creation (SQLite)### GoalsDefine the database business rules and diagrams, then implement schema + indexes consistent with Phase 0 time rules.### Checklist#### 2A — Model definition (before DDL)- [x] Write DB business rules that match entity relationships and cardinalities (`docs/db_business_rules.md`)- [x] Create conceptual ERD (entities + relationships)- [x] Create physical ERD (SQLite types + constraints + indexes)- [x] Draft `docs/schema.md` (tables, columns, constraints, indexes)#### 2B — Schema implementation- [x] Implement schema creation scripts (SQL-first) using loaded repositories (e.g., `sql/schema/001_init.sql`)- [x] Add DB connection setup and pragmas (documented)#### 2C — Verification- [x] Confirm constraints:  - [x] `bars_1m` uniqueness: (`instrument_id`, `ts_start_utc`)  - [x] `bars_30m` uniqueness: (`instrument_id`, `bucket_start_utc`)  - [x] `instruments.symbol` uniqueness- [x] Add/confirm indexes for range scans and day/session queries- [x] Add tests that spin up a temp DB and apply schema scripts### Deliverables- [x] Schema can be created from scratch locally via a CLI command- [x] Tests can create a temp DB and validate table existence (and key constraints at minimum)---## Phase 3 — CLI importer + derived 30m refresh### GoalsDeterministic ingestion pipeline with audit trail and derived 30m rebuild.### Checklist- [x] Define CLI contract (flags: file, symbol, timezone, merge policy)- [x] Parse/validate CSV (types, missing values, bounds)- [x] Compute: `ts_start_utc`, `trading_date_ct_int`, `ct_minute_of_day`- [x] Upsert into `bars_1m` (skip/overwrite)- [x] Rebuild/upsert `bars_30m` for affected range (set-based)- [x] Compute and store: `period_index` (+ optional `tpo` label)- [x] Persist import audit row (counts + bounds)- [x] Add integration test: import → query sample rows### Deliverables- [x] End-to-end import works reliably- [x] Derived 30m rows match aggregation rules---## Phase 4 — Core analytics (ported from existing project)### GoalsRebuild core stats to operate on SQL-backed data (30m-based analyses).### Checklist- [ ] Identify v1 analyses to include (top 3–5)- [ ] Implement analytics services returning structured outputs- [ ] Add tests for edge cases and expected outputs- [ ] Add REST endpoints for analytics outputs (even if UI consumes directly)### Deliverables- [ ] Stats view renders tables from real data---## Phase 5 — Signature analytics (1m breakout/retrace and gaps)### GoalsImplement the standout 1m-based analysis to differentiate the portfolio project.### Checklist- [ ] Implement breakout/retrace stats (ON/RTH/full day)- [ ] Implement optional gap stats at 1m- [ ] Handle missing/partial data explicitly- [ ] Add tests for representative scenarios### Deliverables- [ ] Signature report page renders and matches expected logic---## Phase 6 — UI pages + Plotly charts### GoalsDeliver a usable, navigable UI with interactive charts and htmx updates.### Checklist- [ ] Base layout template + navigation- [ ] Dataset overview page (symbols, coverage, last import)- [ ] Core stats page (tables)- [ ] Rolling breach chart page:  - [ ] date range controls  - [ ] multi-symbol compare  - [ ] Plotly chart rendering  - [ ] htmx fragment updates### Deliverables- [ ] Demo-ready UI with at least one interactive chart---## Phase 7 — Docker + deploy readiness### GoalsRun locally in Docker and enable a straightforward VPS deployment later.### Checklist- [ ] Dockerfile for app- [ ] docker-compose for local run (persistent SQLite volume)- [ ] README run instructions (local + Docker)- [ ] Backup/restore notes for SQLite file- [ ] Deployment notes targeting a low-cost VPS### Deliverables- [ ] Reviewer can run the app from scratch using README
+# Project Checklist
+
+This checklist is organized by phase. Each phase has entry and completion criteria to keep work sequenced and verifiable.
+
+---
+
+## Phase 0 — Time rules and foundational decisions
+
+### Goals
+Lock and document the time/session/bucketing rules that drive schema and ingestion.
+
+### Completed
+- [x] Choose canonical interval: 1-minute bars
+- [x] Choose derived interval: 30-minute bars
+- [x] Define session boundaries (CT):
+  - [x] ON: 17:00:00–08:29:59
+  - [x] RTH: 08:30:00–15:59:59
+- [x] Define trading date rollover (CT 17:00 -> next trading date)
+- [x] Choose stored timestamp representation: `ts_start_utc` epoch seconds INTEGER
+- [x] Decide CT helper fields:
+  - [x] `trading_date_ct_int` (YYYYMMDD integer)
+  - [x] `ct_minute_of_day` (0..1439)
+- [x] Define 30-minute bucket alignment (CT wall-clock half-hours)
+- [x] Define 30m `period_index` rules for ON and RTH
+- [x] Confirm RTH includes 15:30–16:00 bucket; 16:00–16:59 is out-of-session in v1
+
+### Deliverables
+- [x] `docs/time_rules.md`
+- [x] `docs/decisions.md`
+
+### Deferred
+- [ ] Define “breach” precisely for rolling breach analytics (up/down/either; strict vs touch)
+- [ ] Decide whether early closes/holidays must be modeled for v1
+
+---
+
+## Phase 1 — Project skeleton and architecture
+
+### Goals
+Create the repo structure and boundaries that prevent coupling and rework.
+
+### Checklist
+- [x] Create `src/` application structure (domain / services / repositories / web / cli)
+- [x] Add configuration loader (env-driven settings)
+- [x] Add SQL loader utility for “loaded repositories”
+- [x] Establish logging approach (simple, consistent)
+- [x] Add test harness (pytest) and `tests/` layout
+- [x] Add basic scripts/hooks (test runner)
+
+### Deliverables
+- [x] File tree in place (documented in README)
+- [x] “Hello page” route renders a template (FastAPI + templates)
+- [x] One minimal CLI command wired (even if it’s stubbed)
+
+---
+
+## Phase 2 — Data model, schema spec, and schema creation (SQLite)
+
+### Goals
+Define the database business rules and diagrams, then implement schema + indexes consistent with Phase 0 time rules.
+
+### Checklist
+#### 2A — Model definition (before DDL)
+- [x] Write DB business rules that match entity relationships and cardinalities (`docs/db_business_rules.md`)
+- [x] Create conceptual ERD (entities + relationships)
+- [x] Create physical ERD (SQLite types + constraints + indexes)
+- [x] Draft `docs/schema.md` (tables, columns, constraints, indexes)
+
+#### 2B — Schema implementation
+- [x] Implement schema creation scripts (SQL-first) using loaded repositories (e.g., `sql/schema/001_init.sql`)
+- [x] Add DB connection setup and pragmas (documented)
+
+#### 2C — Verification
+- [x] Confirm constraints:
+  - [x] `bars_1m` uniqueness: (`instrument_id`, `ts_start_utc`)
+  - [x] `bars_30m` uniqueness: (`instrument_id`, `bucket_start_utc`)
+  - [x] `instruments.symbol` uniqueness
+- [x] Add/confirm indexes for range scans and day/session queries
+- [x] Add tests that spin up a temp DB and apply schema scripts
+
+### Deliverables
+- [x] Schema can be created from scratch locally via a CLI command
+- [x] Tests can create a temp DB and validate table existence (and key constraints at minimum)
+
+---
+
+## Phase 3 — CLI importer + derived 30m refresh
+
+### Goals
+Deterministic ingestion pipeline with audit trail and derived 30m rebuild.
+
+### Checklist
+- [x] Define CLI contract (flags: file, symbol, timezone, merge policy)
+- [x] Parse/validate CSV (types, missing values, bounds)
+- [x] Compute: `ts_start_utc`, `trading_date_ct_int`, `ct_minute_of_day`
+- [x] Upsert into `bars_1m` (skip/overwrite)
+- [x] Rebuild/upsert `bars_30m` for affected range (set-based)
+- [x] Compute and store: `period_index` (+ optional `tpo` label)
+- [x] Persist import audit row (counts + bounds)
+- [x] Add integration test: import → query sample rows
+
+### Deliverables
+- [x] End-to-end import works reliably
+- [x] Derived 30m rows match aggregation rules
+
+---
+
+## Phase 4 — Core analytics (ported from existing project)
+
+### Goals
+Rebuild core stats to operate on SQL-backed data (30m-based analyses).
+
+### Checklist
+- [x] Identify v1 analyses to include (top 3–5)
+  - [x] Document v1 scope, definitions, parameters, outputs (`docs/phase4_analyses.md`)
+- [x] Define and implement core window abstraction + guardrails
+  - [x] Add `WindowSpec` / `WindowOrderRule` + `validate_pair(...)`
+  - [x] Add tests for midnight windows, overlaps, and ordering
+- [x] Implement data resolution strategy (single-resolution run: 1m vs 30m)
+  - [x] Add `choose_resolution(windows)` + alignment tests
+- [ ] Implement analytics services returning structured outputs
+- [ ] Add tests for edge cases and expected outputs
+- [ ] Add REST endpoints for analytics outputs (even if UI consumes directly)
+
+### Deliverables
+- [ ] Stats view renders tables from real data
+
+---
+
+## Phase 5 — Signature analytics (1m breakout/retrace and gaps)
+
+### Goals
+Implement the standout 1m-based analysis to differentiate the portfolio project.
+
+### Checklist
+- [ ] Implement breakout/retrace stats (ON/RTH/full day)
+- [ ] Implement optional gap stats at 1m
+- [ ] Handle missing/partial data explicitly
+- [ ] Add tests for representative scenarios
+
+### Deliverables
+- [ ] Signature report page renders and matches expected logic
+
+---
+
+## Phase 6 — UI pages + Plotly charts
+
+### Goals
+Deliver a usable, navigable UI with interactive charts and htmx updates.
+
+### Checklist
+- [ ] Base layout template + navigation
+- [ ] Dataset overview page (symbols, coverage, last import)
+- [ ] Core stats page (tables)
+- [ ] Rolling breach chart page:
+  - [ ] date range controls
+  - [ ] multi-symbol compare
+  - [ ] Plotly chart rendering
+  - [ ] htmx fragment updates
+
+### Deliverables
+- [ ] Demo-ready UI with at least one interactive chart
+
+---
+
+## Phase 7 — Docker + deploy readiness
+
+### Goals
+Run locally in Docker and enable a straightforward VPS deployment later.
+
+### Checklist
+- [ ] Dockerfile for app
+- [ ] docker-compose for local run (persistent SQLite volume)
+- [ ] README run instructions (local + Docker)
+- [ ] Backup/restore notes for SQLite file
+- [ ] Deployment notes targeting a low-cost VPS
+
+### Deliverables
+- [ ] Reviewer can run the app from scratch using README
