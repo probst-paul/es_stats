@@ -118,6 +118,10 @@ Rebuild core stats to operate on SQL-backed data (30m-based analyses).
   - [x] Add tests for midnight windows, overlaps, and ordering
 - [x] Implement data resolution strategy (single-resolution run: 1m vs 30m)
   - [x] Add `choose_resolution(windows)` + alignment tests
+- [x] Implement missing data policy + completeness evaluation
+  - [x] Add `MissingPolicy` with independent X/Y tolerances
+  - [x] Add `evaluate_window_coverage(...)` and coverage result types
+  - [x] Add tests for STRICT mode, tolerance boundaries, and X/Y independence
 - [ ] Implement analytics services returning structured outputs
 - [ ] Add tests for edge cases and expected outputs
 - [ ] Add REST endpoints for analytics outputs (even if UI consumes directly)
